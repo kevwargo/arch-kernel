@@ -1,3 +1,12 @@
 /*.old
 /*.orig
 /*.rej
+
+/src/
+/pkg/
+
+*.tar.sign
+*.tar.xz
+*.tar.zst
+*.patch.zst
+*.patch.zst.sig

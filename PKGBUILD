@@ -1,6 +1,6 @@
 # Maintainer: Jan Alexander Steffens (heftig) <heftig@archlinux.org>
 
-pkgbase=linux
+pkgbase=linux-kvz
 pkgver=6.18.2.arch2
 pkgrel=1
 pkgdesc='Linux'
@@ -21,12 +21,6 @@ makedepends=(
   tar
   xz
 
-  # htmldocs
-  graphviz
-  imagemagick
-  python-sphinx
-  python-yaml
-  texlive-latexextra
 )
 options=(
   !debug
@@ -38,6 +32,7 @@ source=(
   https://cdn.kernel.org/pub/linux/kernel/v${pkgver%%.*}.x/${_srcname}.tar.{xz,sign}
   $url/releases/download/$_srctag/linux-$_srctag.patch.zst{,.sig}
   config  # the main kernel config file
+  kvz-kernel.patch
 )
 validpgpkeys=(
   ABAF11C65A2970B130ABE3C479BE3E4300411886  # Linus Torvalds
@@ -49,12 +44,14 @@ sha256sums=('558c6bbab749492b34f99827fe807b0039a744693c21d3a7e03b3a48edaab96a'
             'SKIP'
             '2c66168bb8afe4ba64d087af5a6228ae8ac906200e186dfedb4199fa06f2c6c0'
             'SKIP'
-            'd0ce1ee11ca0bc6a817c3c17a2651076409bd9fd6c0ab9e744aae2131ab654ce')
+            '57b58b678d8ff49631709b1eeaa645fd532b3b25c38d268a33661ed4d7530c88'
+            'd6de856a614fa33d155b65a58048bd4a930caf9f1189f12ce2f59c13fcacd387')
 b2sums=('2e5cae5fe963cf25344ccfe9426d2edab2583b1bb206f6551d60177777595d4c19200e5e3c35ca41b574d25e8fa49013ea086efe05078e7ec2203c77ea420d51'
         'SKIP'
         '97affbffdbac53ed469fcbcbd7c822c0f46860cc740dfb0d40ead77fde7a4559ed982774696bba2c91150de1bdf241b24804b7c623df55bc3348b11e47c6553a'
         'SKIP'
-        'a00e0979e9a77c7e51bd18b3106c7231898c29e2e17d8c21510de7cd6d14ea4487171e4110c230f5537b846798ebdba2d01ecb07d8782abdad5b9814502944af')
+        '4a99e96091ac73cd554b463377c4beb8b1d908da64f10e0b6d9f25d98429f88446ec579914042e99988fe1282b6885da3ce424edda03df8c91d49fe1a6576aff'
+        '79e4f0f2a4cddd3ec6a8c88f7752988c6a3b2aeb86b9714966ab05f7daa43e452d669522178a1310327ce7d337b6ccf9995593e8fd92cd37b3b15fb43f76c79a')
 
 export KBUILD_BUILD_HOST=archlinux
 export KBUILD_BUILD_USER=$pkgbase
@@ -88,9 +85,8 @@ prepare() {
 
 build() {
   cd $_srcname
-  make all
-  make -C tools/bpf/bpftool vmlinux.h feature-clang-bpf-co-re=1
-  make htmldocs SPHINXOPTS=-QT
+  time make -j3 all
+  time make -j3 -C tools/bpf/bpftool vmlinux.h feature-clang-bpf-co-re=1
 }
 
 _package() {
@@ -248,7 +244,6 @@ _package-docs() {
 pkgname=(
   "$pkgbase"
   "$pkgbase-headers"
-  "$pkgbase-docs"
 )
 for _p in "${pkgname[@]}"; do
   eval "package_$_p() {

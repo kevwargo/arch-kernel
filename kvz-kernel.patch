@@ -1,0 +1,52 @@
+--- clean/fs/proc/base.c	2025-12-18 13:03:43.000000000 +0000
++++ mod/fs/proc/base.c	2026-01-04 03:19:31.224321389 +0000
+@@ -3425,6 +3426,7 @@
+ 	ONE("ksm_merging_pages",  S_IRUSR, proc_pid_ksm_merging_pages),
+ 	ONE("ksm_stat",  S_IRUSR, proc_pid_ksm_stat),
+ #endif
++	ONE("subreaper", S_IRUGO, proc_pid_subreaper_show),
+ };
+ 
+ static int proc_tgid_base_readdir(struct file *file, struct dir_context *ctx)
+--- clean/fs/proc/internal.h	2025-12-18 13:03:43.000000000 +0000
++++ mod/fs/proc/internal.h	2026-01-04 03:25:31.719441429 +0000
+@@ -421,6 +421,12 @@
+ }
+ 
+ /*
++ * subreaper.c
++ */
++extern int proc_pid_subreaper_show(struct seq_file *, struct pid_namespace *,
++                                   struct pid *, struct task_struct *);
++
++/*
+  * Add a new procfs dentry that can't serve as a mountpoint. That should
+  * encompass anything that is ephemeral and can just disappear while the
+  * process is still around.
+--- clean/fs/proc/Makefile	2025-12-18 13:03:43.000000000 +0000
++++ mod/fs/proc/Makefile	2026-01-04 03:27:05.690436780 +0000
+@@ -27,6 +27,7 @@
+ proc-y	+= namespaces.o
+ proc-y	+= self.o
+ proc-y	+= thread_self.o
++proc-y	+= subreaper.o
+ proc-$(CONFIG_PROC_SYSCTL)	+= proc_sysctl.o
+ proc-$(CONFIG_NET)		+= proc_net.o
+ proc-$(CONFIG_PROC_KCORE)	+= kcore.o
+--- clean/fs/proc/subreaper.c	1970-01-01 00:00:00.000000000 +0000
++++ mod/fs/proc/subreaper.c	1970-01-01 00:00:00.000000000 +0000
+@@ -0,0 +1,14 @@
++#include <linux/seq_file.h>
++#include "internal.h"
++
++int proc_pid_subreaper_show(struct seq_file *m, struct pid_namespace *ns,
++			    struct pid *pid, struct task_struct *task)
++{
++	if (task->signal == NULL)
++		seq_puts(m, "NULL\n");
++	else
++		seq_printf(m, "%d %d\n", task->signal->is_child_subreaper,
++			   task->signal->has_child_subreaper);
++
++        return 0;
++}
