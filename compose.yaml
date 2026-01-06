@@ -1,0 +1,6 @@
+services:
+  kbuild:
+    build: .
+    volumes:
+      - ./:/kbuild
+    working_dir: /kbuild
