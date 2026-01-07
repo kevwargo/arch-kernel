@@ -85,8 +85,8 @@ prepare() {
 
 build() {
   cd $_srcname
-  time make -j3 all
-  time make -j3 -C tools/bpf/bpftool vmlinux.h feature-clang-bpf-co-re=1
+  time make -j$(shell nproc) all
+  time make -j$(shell nproc) -C tools/bpf/bpftool vmlinux.h feature-clang-bpf-co-re=1
 }
 
 _package() {
