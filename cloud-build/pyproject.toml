@@ -1,0 +1,12 @@
+[project]
+name = "arch-kernel-cloud-build"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "boto3>=1.42.24",
+]
+
+[tool.black]
+line-length = 96

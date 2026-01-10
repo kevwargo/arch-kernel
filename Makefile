@@ -22,3 +22,6 @@ extract:
 
 build:
 	$(DOCK) makepkg --noextract --force
+
+build-ci:
+	$(DOCK) makepkg --force
