@@ -15,6 +15,7 @@ class KBuildStack extends Stack {
 
     const vpc = Vpc.fromLookup(this, "VPC", { isDefault: true });
     const image = new CustomImage(this, "KernelBuilder", {
+      name: "arch-kernel-builder",
       vpc,
       sourceImageId: StringParameter.valueFromLookup(
         this,

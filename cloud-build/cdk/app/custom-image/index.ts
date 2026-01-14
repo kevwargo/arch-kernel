@@ -25,6 +25,7 @@ import { pascalCase } from "change-case";
 import { Construct } from "constructs";
 
 export interface CustomImageProps {
+  name: string;
   vpc: IVpc;
   sourceImageId: string;
   commands: string[];
@@ -84,10 +85,10 @@ export class CustomImage extends Construct {
         "on_event",
         new PolicyStatement({
           actions: [
-            "ec2:RunInstances",
             "ec2:DescribeInstances",
-            "ec2:TerminateInstances",
+            "ec2:RunInstances",
             "ec2:CreateTags",
+            "ec2:TerminateInstances",
           ],
           resources: ["*"],
         }),
@@ -99,7 +100,14 @@ export class CustomImage extends Construct {
       isCompleteHandler: createHandlerFn(
         "is_complete",
         new PolicyStatement({
-          actions: ["ec2:DescribeInstances", "ec2:CreateImage"],
+          actions: [
+            "ec2:DescribeInstances",
+            "ec2:DescribeImages",
+            "ec2:CreateImage",
+            "ec2:CreateTags",
+            "ec2:StopInstances",
+            "ec2:TerminateInstances",
+          ],
           resources: ["*"],
         }),
       ),
@@ -109,12 +117,12 @@ export class CustomImage extends Construct {
     const userData = UserData.forLinux();
     userData.addCommands(...props.commands);
     userData.addOnExitCommands(
-      "TOKEN=`curl -X PUT http://169.254.169.254/latest/api/token -H X-aws-ec2-metadata-token-ttl-seconds:21600`",
-      "INSTANCE_ID=`curl -H X-aws-ec2-metadata-token:$TOKEN http://169.254.169.254/latest/meta-data/instance-id`",
+      "INSTANCE_ID=`curl http://169.254.169.254/latest/meta-data/instance-id`",
       "aws ec2 create-tags --resources $INSTANCE_ID --tags Key=image-build-exit-code,Value=$exitCode",
     );
 
     const imageProps: { [key: string]: any } = {
+      Name: props.name,
       SecurityGroupId: secGroup.securityGroupId,
       SourceImageId: props.sourceImageId,
       RootVolumeSize: props.size,
