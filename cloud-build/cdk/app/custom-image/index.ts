@@ -1,23 +1,6 @@
-import {
-  CustomResource,
-  Duration,
-  IgnoreMode,
-  RemovalPolicy,
-} from "aws-cdk-lib";
-import {
-  IVpc,
-  KeyPair,
-  Peer,
-  Port,
-  SecurityGroup,
-  UserData,
-} from "aws-cdk-lib/aws-ec2";
-import {
-  InstanceProfile,
-  PolicyStatement,
-  Role,
-  ServicePrincipal,
-} from "aws-cdk-lib/aws-iam";
+import { CustomResource, Duration, IgnoreMode, RemovalPolicy } from "aws-cdk-lib";
+import { IVpc, KeyPair, Peer, Port, SecurityGroup, UserData } from "aws-cdk-lib/aws-ec2";
+import { InstanceProfile, PolicyStatement, Role, ServicePrincipal } from "aws-cdk-lib/aws-iam";
 import { Code, Function, LoggingFormat, Runtime } from "aws-cdk-lib/aws-lambda";
 import { LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
 import { Provider } from "aws-cdk-lib/custom-resources";
@@ -50,8 +33,7 @@ export class CustomImage extends Construct {
     });
 
     const instanceRole = new Role(this, "InstanceRole", {
-      assumedBy:
-        ServicePrincipal.fromStaticServicePrincipleName("ec2.amazonaws.com"),
+      assumedBy: ServicePrincipal.fromStaticServicePrincipleName("ec2.amazonaws.com"),
     });
     instanceRole.addToPolicy(
       new PolicyStatement({
