@@ -16,13 +16,13 @@ export class KBuildStack extends Stack {
     const vpc = Vpc.fromLookup(this, "VPC", { isDefault: true });
 
     const sfnBuilder = new SFNImageBuilder(this, "SFNBuilder", {
-      imageName: "arch-kernel-builder",
       vpc,
+      imageName: "arch-kernel-builder",
       sourceImageId: StringParameter.valueFromLookup(
         this,
         "/aws/service/ami-amazon-linux-latest/al2023-ami-minimal-kernel-default-x86_64",
       ),
-      commands: [
+      prepareScript: [
         "set -xe",
         "dnf install -y spal-release",
         "dnf install -y docker-cli docker-compose btrfs-progs screen git make",
