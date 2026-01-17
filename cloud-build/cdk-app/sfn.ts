@@ -16,13 +16,7 @@ import {
   Role,
   ServicePrincipal,
 } from "aws-cdk-lib/aws-iam";
-import {
-  Code,
-  Function,
-  FunctionOptions,
-  IFunction,
-  Runtime,
-} from "aws-cdk-lib/aws-lambda";
+import { Code, Function, FunctionOptions, IFunction, Runtime } from "aws-cdk-lib/aws-lambda";
 import { ILogGroup, LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
 import {
   Choice,
@@ -33,12 +27,14 @@ import {
   JsonPath,
   Pass,
   StateMachine,
+  Succeed,
   TaskInput,
   Timeout,
   Wait,
   WaitTime,
 } from "aws-cdk-lib/aws-stepfunctions";
-import { LambdaInvoke } from "aws-cdk-lib/aws-stepfunctions-tasks";
+import { CallAwsService, LambdaInvoke } from "aws-cdk-lib/aws-stepfunctions-tasks";
+import { SynthesisMessageLevel } from "aws-cdk-lib/cx-api";
 import { Construct } from "constructs";
 
 export interface SFNImageBuilderProps {
@@ -97,8 +93,7 @@ export class SFNImageBuilder extends Construct {
       prepareScript: props.prepareScript,
       rootVolSize: props.rootVolSize ?? 10,
       instanceType: (
-        props.instanceType ??
-        InstanceType.of(InstanceClass.T3, InstanceSize.SMALL)
+        props.instanceType ?? InstanceType.of(InstanceClass.T3, InstanceSize.SMALL)
       ).toString(),
       instanceProfileArn: instanceProfile.instanceProfileArn,
     };
@@ -111,22 +106,20 @@ export class SFNImageBuilder extends Construct {
       secGroup.addIngressRule(Peer.anyIpv4(), Port.SSH);
     }
 
-    const runnerFn = this.createFunction("run_instance", {
-      initialPolicy: [
-        new PolicyStatement({
-          actions: ["ec2:RunInstances", "ec2:CreateTags"],
-          resources: ["*"],
-        }),
-        new PolicyStatement({
-          actions: ["iam:PassRole"],
-          resources: [instanceRole.roleArn],
-        }),
-      ],
-    });
-
     const runnerStep = LambdaInvoke.jsonPath(this, "runnerStep", {
       stateName: "runInstance",
-      lambdaFunction: runnerFn,
+      lambdaFunction: this.createFunction("run_instance", {
+        initialPolicy: [
+          new PolicyStatement({
+            actions: ["ec2:RunInstances", "ec2:CreateTags"],
+            resources: ["*"],
+          }),
+          new PolicyStatement({
+            actions: ["iam:PassRole"],
+            resources: [instanceRole.roleArn],
+          }),
+        ],
+      }),
       integrationPattern: IntegrationPattern.WAIT_FOR_TASK_TOKEN,
       payload: TaskInput.fromObject({
         ...runnerPayload,
@@ -152,16 +145,36 @@ export class SFNImageBuilder extends Construct {
       payloadResponseOnly: true,
       resultPath: "$.instance.stopped",
     });
-
     stopperStep.addCatch(errorHandler);
+
+    const imageCreatorStep = LambdaInvoke.jsonPath(this, "imageCreatorStep", {
+      stateName: "createImage",
+      lambdaFunction: this.createFunction("create_image", {
+        initialPolicy: [
+          new PolicyStatement({
+            actions: [
+              "ec2:CreateImage",
+              "ec2:CreateTags",
+              "ec2:DescribeImages",
+              "ec2:TerminateInstances",
+            ],
+            resources: ["*"],
+          }),
+        ],
+        environment: {
+          IMAGE_NAME: props.imageName,
+        },
+      }),
+      payloadResponseOnly: true,
+      resultPath: "$.image",
+    });
+    imageCreatorStep.addCatch(errorHandler);
+
     stopperStep.next(
       Choice.jsonPath(scope, "instanceStateChoice", {
         stateName: "isInstanceStopped",
       })
-        .when(
-          Condition.booleanEquals("$.instance.stopped", true),
-          Pass.jsonPath(this, "finalStep"),
-        )
+        .when(Condition.booleanEquals("$.instance.stopped", true), imageCreatorStep)
         .otherwise(
           Wait.jsonPath(this, "waitInstanceStopped", {
             time: WaitTime.duration(Duration.seconds(5)),
@@ -169,6 +182,21 @@ export class SFNImageBuilder extends Construct {
         ),
     );
     runnerStep.next(stopperStep);
+
+    imageCreatorStep.next(
+      Choice.jsonPath(this, "imageStateChoice", {
+        stateName: "isImageAvailable",
+      })
+        .when(
+          Condition.booleanEquals("$.image.available", true),
+          Succeed.jsonPath(this, "successStep"),
+        )
+        .otherwise(
+          Wait.jsonPath(this, "waitImageAvailable", {
+            time: WaitTime.duration(Duration.seconds(5)),
+          }).next(imageCreatorStep),
+        ),
+    );
 
     this.sfn = new StateMachine(this, "SFN", {
       definitionBody: DefinitionBody.fromChainable(runnerStep),

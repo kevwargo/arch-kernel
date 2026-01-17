@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -87,6 +88,45 @@ def stop_instance(instance: dict, _):
         return True
 
     raise ValueError(f"Unexpected state {state} for instance {instance_id}")
+
+
+def create_image(event: dict, _):
+    if image_id := event.get("image", {}).get("id"):
+        state = ec2.describe_images(ImageIds=[image_id])["Images"][0]["State"]
+        if state == "available":
+            ec2.terminate_instances(InstanceIds=[event["instance"]["id"]])
+            return {"id": image_id, "available": True}
+        if state in ("pending", "transient"):
+            return {"id": image_id, "available": False}
+
+        raise ValueError(f"Unexpected state {state} for image {image_id}")
+
+    image_id = ec2.create_image(
+        InstanceId=event["instance"]["id"],
+        Name=os.getenv("IMAGE_NAME"),
+        TagSpecifications=[
+            {
+                "ResourceType": "image",
+                "Tags": [
+                    {
+                        "Key": TAG_RESOURCE_ID,
+                        "Value": event["resourceId"],
+                    },
+                ],
+            },
+            {
+                "ResourceType": "snapshot",
+                "Tags": [
+                    {
+                        "Key": TAG_RESOURCE_ID,
+                        "Value": event["resourceId"],
+                    },
+                ],
+            },
+        ],
+    )["ImageId"]
+
+    return {"id": image_id, "available": False}
 
 
 def on_error(event, _):
