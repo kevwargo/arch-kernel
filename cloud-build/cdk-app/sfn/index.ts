@@ -1,14 +1,4 @@
-import { Duration, RemovalPolicy } from "aws-cdk-lib";
-import {
-  InstanceClass,
-  InstanceSize,
-  InstanceType,
-  IVpc,
-  KeyPair,
-  Peer,
-  Port,
-  SecurityGroup,
-} from "aws-cdk-lib/aws-ec2";
+import { Duration } from "aws-cdk-lib";
 import {
   InstanceProfile,
   PolicyDocument,
@@ -17,7 +7,7 @@ import {
   ServicePrincipal,
 } from "aws-cdk-lib/aws-iam";
 import { Code, Function, FunctionOptions, IFunction, Runtime } from "aws-cdk-lib/aws-lambda";
-import { ILogGroup, LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
+import { ILogGroup } from "aws-cdk-lib/aws-logs";
 import {
   Choice,
   Condition,
@@ -25,25 +15,21 @@ import {
   IntegrationPattern,
   IStateMachine,
   JsonPath,
-  Pass,
   StateMachine,
-  Succeed,
   TaskInput,
   Timeout,
   Wait,
   WaitTime,
 } from "aws-cdk-lib/aws-stepfunctions";
-import { CallAwsService, LambdaInvoke } from "aws-cdk-lib/aws-stepfunctions-tasks";
-import { SynthesisMessageLevel } from "aws-cdk-lib/cx-api";
+import { LambdaInvoke } from "aws-cdk-lib/aws-stepfunctions-tasks";
+import { pascalCase } from "change-case";
 import { Construct } from "constructs";
 
 export interface SFNImageBuilderProps {
-  vpc: IVpc;
-  imageName: string;
-  sourceImageId: string;
-  prepareScript: string[];
-  instanceType?: InstanceType;
-  rootVolSize?: number;
+  securityGroupId: string;
+  keyName?: string;
+  finalizerFn: IFunction;
+  logGroup: ILogGroup;
 }
 
 export class SFNImageBuilder extends Construct {
@@ -54,21 +40,12 @@ export class SFNImageBuilder extends Construct {
   constructor(scope: Construct, id: string, props: SFNImageBuilderProps) {
     super(scope, id);
 
-    this.logGroup = new LogGroup(this, "LogGroup", {
-      removalPolicy: RemovalPolicy.RETAIN,
-      retention: RetentionDays.ONE_MONTH,
-    });
-
-    const secGroup = new SecurityGroup(this, "SecurityGroup", {
-      vpc: props.vpc,
-      allowAllIpv6Outbound: true,
-      allowAllOutbound: true,
-    });
+    this.logGroup = props.logGroup;
 
     const instanceRole = new Role(this, "InstanceRole", {
       assumedBy: new ServicePrincipal("ec2.amazonaws.com"),
       inlinePolicies: {
-        sfnToken: new PolicyDocument({
+        sendSFNToken: new PolicyDocument({
           statements: [
             new PolicyStatement({
               actions: ["states:SendTaskSuccess", "states:SendTaskFailure"],
@@ -81,30 +58,6 @@ export class SFNImageBuilder extends Construct {
     const instanceProfile = new InstanceProfile(this, "InstanceProfile", {
       role: instanceRole,
     });
-
-    const errorHandler = LambdaInvoke.jsonPath(this, "errorHandler", {
-      lambdaFunction: this.createFunction("on_error"),
-    });
-
-    const runnerPayload: { [key: string]: any } = {
-      securityGroupId: secGroup.securityGroupId,
-      sourceImageId: props.sourceImageId,
-      imageName: props.imageName,
-      prepareScript: props.prepareScript,
-      rootVolSize: props.rootVolSize ?? 10,
-      instanceType: (
-        props.instanceType ?? InstanceType.of(InstanceClass.T3, InstanceSize.SMALL)
-      ).toString(),
-      instanceProfileArn: instanceProfile.instanceProfileArn,
-    };
-
-    const publicKey = this.node.tryGetContext("debug-ssh-public-key");
-    if (publicKey) {
-      runnerPayload.keyName = new KeyPair(this, "KeyPair", {
-        publicKeyMaterial: publicKey,
-      }).keyPairName;
-      secGroup.addIngressRule(Peer.anyIpv4(), Port.SSH);
-    }
 
     const runnerStep = LambdaInvoke.jsonPath(this, "runnerStep", {
       stateName: "runInstance",
@@ -122,14 +75,16 @@ export class SFNImageBuilder extends Construct {
       }),
       integrationPattern: IntegrationPattern.WAIT_FOR_TASK_TOKEN,
       payload: TaskInput.fromObject({
-        ...runnerPayload,
+        securityGroupId: props.securityGroupId,
+        instanceProfileArn: instanceProfile.instanceProfileArn,
+        keyName: props.keyName,
         taskToken: JsonPath.taskToken,
-        resourceId: JsonPath.stringAt("$.resourceId"),
+        cfn: JsonPath.objectAt("$.cfn"),
+        props: JsonPath.objectAt("$.props"),
       }),
       taskTimeout: Timeout.duration(Duration.minutes(15)),
       resultPath: "$.instance",
     });
-    runnerStep.addCatch(errorHandler, { resultPath: "$.errorPath" });
 
     const stopperStep = LambdaInvoke.jsonPath(this, "stopperStep", {
       stateName: "stopInstance",
@@ -145,7 +100,6 @@ export class SFNImageBuilder extends Construct {
       payloadResponseOnly: true,
       resultPath: "$.instance.stopped",
     });
-    stopperStep.addCatch(errorHandler);
 
     const imageCreatorStep = LambdaInvoke.jsonPath(this, "imageCreatorStep", {
       stateName: "createImage",
@@ -161,14 +115,10 @@ export class SFNImageBuilder extends Construct {
             resources: ["*"],
           }),
         ],
-        environment: {
-          IMAGE_NAME: props.imageName,
-        },
       }),
       payloadResponseOnly: true,
       resultPath: "$.image",
     });
-    imageCreatorStep.addCatch(errorHandler);
 
     stopperStep.next(
       Choice.jsonPath(scope, "instanceStateChoice", {
@@ -183,32 +133,39 @@ export class SFNImageBuilder extends Construct {
     );
     runnerStep.next(stopperStep);
 
+    const finalStep = LambdaInvoke.jsonPath(this, "finalStep", {
+      stateName: "finalizer",
+      lambdaFunction: props.finalizerFn,
+      resultPath: JsonPath.DISCARD,
+    });
+
     imageCreatorStep.next(
       Choice.jsonPath(this, "imageStateChoice", {
         stateName: "isImageAvailable",
       })
-        .when(
-          Condition.booleanEquals("$.image.available", true),
-          Succeed.jsonPath(this, "successStep"),
-        )
+        .when(Condition.booleanEquals("$.image.available", true), finalStep)
         .otherwise(
           Wait.jsonPath(this, "waitImageAvailable", {
-            time: WaitTime.duration(Duration.seconds(5)),
+            time: WaitTime.duration(Duration.seconds(15)),
           }).next(imageCreatorStep),
         ),
     );
 
-    this.sfn = new StateMachine(this, "SFN", {
+    [runnerStep, stopperStep, imageCreatorStep].forEach(s =>
+      s.addCatch(finalStep, { resultPath: "$.error" }),
+    );
+
+    this.sfn = new StateMachine(this, "StateMachine", {
       definitionBody: DefinitionBody.fromChainable(runnerStep),
     });
   }
 
   private createFunction(handler: string, opts?: FunctionOptions): IFunction {
-    return new Function(this, `${handler}Handler`, {
+    return new Function(this, pascalCase(handler), {
       runtime: Runtime.PYTHON_3_13,
       code: Code.fromAsset(`${__dirname}/lambda`),
-      handler: `index.${handler}`,
-      timeout: Duration.minutes(1),
+      handler: `handler.${handler}`,
+      timeout: Duration.minutes(3),
       logGroup: this.logGroup,
       ...opts,
     });

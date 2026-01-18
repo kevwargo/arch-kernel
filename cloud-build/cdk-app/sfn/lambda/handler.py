@@ -6,6 +6,7 @@ from pathlib import Path
 from string import Template
 
 import boto3
+from botocore.exceptions import ClientError
 
 TAG_RESOURCE_ID = "sfn-imgbuilder-resource-id"
 EC2_LOGFILE = "/var/log/sfn-imgbuilder.log"
@@ -24,18 +25,20 @@ class ShellTemplate(Template):
 
 
 def run_instance(event, _):
+    props = event["props"]
+
     tmpl = ShellTemplate((Path(__file__).parent / "user-data-tmpl.sh").read_text())
     user_data = tmpl.substitute(
         TASK_TOKEN=event["taskToken"],
         LOGFILE=EC2_LOGFILE,
-        SCRIPT="\n    ".join(event["prepareScript"]),
+        SCRIPT="\n    ".join(props["PrepareScript"]),
     )
 
     params = dict(
-        ImageId=event["sourceImageId"],
+        ImageId=props["SourceImageId"],
         MinCount=1,
         MaxCount=1,
-        InstanceType=event["instanceType"],
+        InstanceType="t3.small",
         SecurityGroupIds=[event["securityGroupId"]],
         IamInstanceProfile={"Arn": event["instanceProfileArn"]},
         UserData=user_data,
@@ -43,7 +46,7 @@ def run_instance(event, _):
         BlockDeviceMappings=[
             {
                 "DeviceName": "/dev/xvda",
-                "Ebs": {"VolumeSize": event["rootVolSize"]},
+                "Ebs": {"VolumeSize": props["RootVolSize"]},
             }
         ],
         TagSpecifications=[
@@ -52,11 +55,11 @@ def run_instance(event, _):
                 "Tags": [
                     {
                         "Key": "Name",
-                        "Value": f'image-build-{event["imageName"]}',
+                        "Value": f'image-build-{props["Name"]}',
                     },
                     {
                         "Key": TAG_RESOURCE_ID,
-                        "Value": event["resourceId"],
+                        "Value": event["cfn"]["PhysicalResourceId"],
                     },
                 ],
             },
@@ -101,16 +104,19 @@ def create_image(event: dict, _):
 
         raise ValueError(f"Unexpected state {state} for image {image_id}")
 
-    image_id = ec2.create_image(
+    props = event["props"]
+    resource_id = event["cfn"]["PhysicalResourceId"]
+
+    params = dict(
         InstanceId=event["instance"]["id"],
-        Name=os.getenv("IMAGE_NAME"),
+        Name=props["Name"],
         TagSpecifications=[
             {
                 "ResourceType": "image",
                 "Tags": [
                     {
                         "Key": TAG_RESOURCE_ID,
-                        "Value": event["resourceId"],
+                        "Value": resource_id,
                     },
                 ],
             },
@@ -119,19 +125,23 @@ def create_image(event: dict, _):
                 "Tags": [
                     {
                         "Key": TAG_RESOURCE_ID,
-                        "Value": event["resourceId"],
+                        "Value": resource_id,
                     },
                 ],
             },
         ],
-    )["ImageId"]
+    )
+
+    try:
+        image_id = ec2.create_image(**params)["ImageId"]
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "InvalidAMIName.Duplicate":
+            raise
+
+        log(f'{e.response["Error"]["Message"]}: retrying')
+        return {"available": False}
 
     return {"id": image_id, "available": False}
-
-
-def on_error(event, _):
-    print(json.dumps({"errorDetails": event}, default=str))
-    return {}
 
 
 def log(msg: str, **fields):
