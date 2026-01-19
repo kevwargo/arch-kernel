@@ -1,10 +1,13 @@
 import { Duration, RemovalPolicy } from "aws-cdk-lib";
 import { KeyPair, Peer, Port, SecurityGroup, Vpc } from "aws-cdk-lib/aws-ec2";
+import { PolicyStatement } from "aws-cdk-lib/aws-iam";
 import { Code, Function, FunctionOptions, IFunction, Runtime } from "aws-cdk-lib/aws-lambda";
 import { ILogGroup, LogGroup, RetentionDays } from "aws-cdk-lib/aws-logs";
 import { pascalCase } from "change-case";
 import { Construct } from "constructs";
 import { SFNImageBuilder, SFNImageBuilderProps } from "../sfn";
+
+const RESOURCE_TAG_KEY = "imgbuilder-resource-id";
 
 export class CustomImageProvider extends Construct {
   public readonly serviceToken: string;
@@ -27,8 +30,11 @@ export class CustomImageProvider extends Construct {
 
     const sfnProps: SFNImageBuilderProps = {
       securityGroupId: secGroup.securityGroupId,
-      finalizerFn: this.createFunction("finalizer"),
+      finalizerFn: this.createFunction("finalizer", {
+        environment: { RESOURCE_TAG_KEY },
+      }),
       logGroup: this.logGroup,
+      resourceTagKey: RESOURCE_TAG_KEY,
     };
 
     const publicKey = this.node.tryGetContext("debug-ssh-public-key");
@@ -44,7 +50,14 @@ export class CustomImageProvider extends Construct {
     const starterFn = this.createFunction("starter", {
       environment: {
         STATE_MACHINE_ARN: builder.sfn.stateMachineArn,
+        RESOURCE_TAG_KEY,
       },
+      initialPolicy: [
+        new PolicyStatement({
+          actions: ["ec2:DescribeImages", "ec2:DeregisterImage", "ec2:DeleteSnapshot"],
+          resources: ["*"],
+        }),
+      ],
     });
     builder.sfn.grantStartExecution(starterFn);
 

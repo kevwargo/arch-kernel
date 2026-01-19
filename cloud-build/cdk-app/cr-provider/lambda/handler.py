@@ -1,76 +1,45 @@
 import json
 import os
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import boto3
 import requests
 
 STATE_MACHINE_ARN = os.getenv("STATE_MACHINE_ARN")
+RESOURCE_TAG_KEY = os.getenv("RESOURCE_TAG_KEY")
 
 sfn = boto3.client("stepfunctions")
-
-# Event example:
-# {
-#    "RequestType" : "Create",
-#    "RequestId" : "4880d380-40d3-4217-b78b-2afe8cab8e90",
-#    "StackId" : "arn:aws:cloudformation:us-west-2:123456789012:stack/mystack/5b918d10-cd98-11ea-90d5-0a9cd3354c10",
-#    "ResponseURL" : "http://pre-signed-S3-url-for-response",
-#    "ResourceType" : "Custom::TestResource",
-#    "LogicalResourceId" : "MyTestResource",
-#    "ResourceProperties" : {
-#       "Name" : "Value",
-#       "List" : [ "1", "2", "3" ]
-#    }
-# }
-
-# Create and Update Response
-# {
-#    "Status": "SUCCESS",
-#    "RequestId": "unique-request-id",
-#    "StackId": "arn:aws:cloudformation:us-west-2:123456789012:stack/name/id",
-#    "LogicalResourceId": "resource-logical-id",
-#    "PhysicalResourceId": "provider-defined-physical-id",
-#    "NoEcho": true,
-#    "Data": {
-#       "key1": "value1",
-#       "key2": "value2"
-#    }
-# }
-# Delete Response
-# {
-#    "Status": "SUCCESS",
-#    "RequestId": "unique-request-id",
-#    "StackId": "arn:aws:cloudformation:us-west-2:123456789012:stack/name/id",
-#    "LogicalResourceId": "resource-logical-id",
-#    "PhysicalResourceId": "provider-defined-physical-id"
-# }
-# Failed Response Example
-# {
-#    "Status": "FAILED",
-#    "RequestId": "unique-request-id",
-#    "StackId": "arn:aws:cloudformation:us-west-2:123456789012:stack/name/id",
-#    "LogicalResourceId": "resource-logical-id",
-#    "PhysicalResourceId": "provider-defined-physical-id",
-#    "Reason": "Required failure reason string"
-# }
+ec2 = boto3.client("ec2")
 
 
-def starter(event: dict, _):
-    print(json.dumps(event, default=str))
-    {"Create": on_create, "Update": on_update, "Delete": on_delete}[event["RequestType"]](event)
+def starter(cfn_event: dict, _):
+    log("Handling CFN request", event=cfn_event)
+
+    try:
+        req = cfn_event["RequestType"]
+        if req == "Create":
+            handle_create(cfn_event)
+        elif req == "Update":
+            handle_update(cfn_event)
+        elif req == "Delete":
+            handle_delete(cfn_event)
+        else:
+            raise ValueError(f"Invalid CFN request type {req!r}")
+    except Exception as e:
+        upload_response(cfn_event, error=f"{type(e).__name__}: {e}")
 
 
-def on_create(event: dict):
+def handle_create(cfn_event: dict):
     cfn = {
         k: v
-        for k, v in event.items()
+        for k, v in cfn_event.items()
         if k in ("RequestId", "StackId", "LogicalResourceId", "ResponseURL")
     }
     cfn["PhysicalResourceId"] = str(uuid4())
-    props = event["ResourceProperties"]
 
-    # this conversion is needed because CFN converts numbers to strings
-    # along the way for some reason
+    props = cfn_event["ResourceProperties"]
+    # CFN converts numbers to strings along the way for some reason
     props["RootVolSize"] = int(props["RootVolSize"])
 
     sfn.start_execution(
@@ -79,31 +48,78 @@ def on_create(event: dict):
     )
 
 
-def on_update(event: dict):
-    upload_success(event)
+def handle_update(cfn_event: dict):
+    images = find_images(cfn_event)
+    if not images:
+        raise ValueError(
+            f'EC2 image with tags {RESOURCE_TAG_KEY}={cfn_event["PhysicalResourceId"]} not found'
+        )
+    if len(images) > 1:
+        raise ValueError(
+            f'Multiple EC2 images with tags {RESOURCE_TAG_KEY}={cfn_event["PhysicalResourceId"]}: '
+            + ", ".join(i["ImageId"] for i in images)
+        )
+
+    upload_response(cfn_event, data={"ImageId": images[0]["ImageId"]})
 
 
-def on_delete(event: dict):
-    upload_success(event)
+def handle_delete(cfn_event: dict):
+    for img in find_images(cfn_event):
+        log("Deregistering image", image=img)
+        resp = ec2.deregister_image(
+            ImageId=img["ImageId"],
+            DeleteAssociatedSnapshots=True,
+        )
+        log("Image deregistered", resp=resp)
+
+    upload_response(cfn_event)
 
 
-def upload_success(event: dict):
-    data = {"Status": "SUCCESS"}
-    data.update(
-        (k, v)
-        for k, v in event.items()
-        if k in ("RequestId", "StackId", "LogicalResourceId", "PhysicalResourceId")
+def find_images(cfn_event: dict):
+    return (
+        ec2.describe_images(
+            Filters=[
+                {"Name": f"tag:{RESOURCE_TAG_KEY}", "Values": [cfn_event["PhysicalResourceId"]]}
+            ]
+        ).get("Images")
+        or []
     )
-    resp = requests.put(event["ResponseURL"], json=data)
-    resp.raise_for_status()
 
 
 def finalizer(event: dict, _):
+    cfn_event = event["cfn"]
     if error := event.get("error"):
-        data = {"Status": "FAILED", "Reason": f'{error["Error"]!r}: {error["Cause"]}'}
+        upload_response(cfn_event, error=f'{error["Error"]!r}: {error["Cause"]}')
     else:
-        data = {"Status": "SUCCESS", "Data": {"ImageId": event["image"]["id"]}}
+        upload_response(cfn_event, data={"ImageId": event["image"]["id"]})
 
-    url = event["cfn"].pop("ResponseURL")
-    resp = requests.put(url, json=event["cfn"] | data)
+
+def upload_response(
+    cfn_event: dict,
+    *,
+    error: str | None = None,
+    data: dict | None = None,
+    new_id: str | None = None,
+):
+    payload = dict(cfn_event)
+    url = payload.pop("ResponseURL")
+    if error is not None:
+        payload["Status"] = "FAILED"
+        payload["Reason"] = error
+    else:
+        payload["Status"] = "SUCCESS"
+
+    if data is not None:
+        payload["Data"] = data
+
+    if new_id is not None:
+        payload["PhysicalResourceId"] = new_id
+
+    log("Uploading CFN response", url=url, payload=payload)
+
+    resp = requests.put(url, json=payload)
     resp.raise_for_status()
+
+
+def log(msg: str, **fields):
+    print(json.dumps({"msg": msg, "time": datetime.now(UTC), **fields}, default=str))

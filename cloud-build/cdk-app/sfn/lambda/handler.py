@@ -8,8 +8,8 @@ from string import Template
 import boto3
 from botocore.exceptions import ClientError
 
-TAG_RESOURCE_ID = "sfn-imgbuilder-resource-id"
 EC2_LOGFILE = "/var/log/sfn-imgbuilder.log"
+RESOURCE_TAG_KEY = os.getenv("RESOURCE_TAG_KEY")
 
 ec2 = boto3.client("ec2")
 
@@ -58,7 +58,7 @@ def run_instance(event, _):
                         "Value": f'image-build-{props["Name"]}',
                     },
                     {
-                        "Key": TAG_RESOURCE_ID,
+                        "Key": RESOURCE_TAG_KEY,
                         "Value": event["cfn"]["PhysicalResourceId"],
                     },
                 ],
@@ -115,7 +115,7 @@ def create_image(event: dict, _):
                 "ResourceType": "image",
                 "Tags": [
                     {
-                        "Key": TAG_RESOURCE_ID,
+                        "Key": RESOURCE_TAG_KEY,
                         "Value": resource_id,
                     },
                 ],
@@ -124,7 +124,7 @@ def create_image(event: dict, _):
                 "ResourceType": "snapshot",
                 "Tags": [
                     {
-                        "Key": TAG_RESOURCE_ID,
+                        "Key": RESOURCE_TAG_KEY,
                         "Value": resource_id,
                     },
                 ],

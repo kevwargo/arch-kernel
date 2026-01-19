@@ -30,17 +30,18 @@ export interface SFNImageBuilderProps {
   keyName?: string;
   finalizerFn: IFunction;
   logGroup: ILogGroup;
+  resourceTagKey: string;
 }
 
 export class SFNImageBuilder extends Construct {
   public readonly sfn: IStateMachine;
 
-  private readonly logGroup: ILogGroup;
+  private readonly props: SFNImageBuilderProps;
 
   constructor(scope: Construct, id: string, props: SFNImageBuilderProps) {
     super(scope, id);
 
-    this.logGroup = props.logGroup;
+    this.props = props;
 
     const instanceRole = new Role(this, "InstanceRole", {
       assumedBy: new ServicePrincipal("ec2.amazonaws.com"),
@@ -166,8 +167,12 @@ export class SFNImageBuilder extends Construct {
       code: Code.fromAsset(`${__dirname}/lambda`),
       handler: `handler.${handler}`,
       timeout: Duration.minutes(3),
-      logGroup: this.logGroup,
+      logGroup: this.props.logGroup,
       ...opts,
+      environment: {
+        RESOURCE_TAG_KEY: this.props.resourceTagKey,
+        ...(opts?.environment ?? {}),
+      },
     });
   }
 }
