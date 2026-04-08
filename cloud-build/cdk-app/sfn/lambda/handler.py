@@ -16,9 +16,9 @@ ec2 = boto3.client("ec2")
 
 class ShellTemplate(Template):
     pattern = """@(?:
-    (?P<escaped>@)                  |
-    (?P<named>[A-Z][A-Z0-9_]*)      |
-    {{(?P<braced>[A-Z][A-Z0-9_]*)}} |
+    (?P<escaped>@)                |
+    (?P<named>[A-Z][A-Z0-9_]*)    |
+    {(?P<braced>[A-Z][A-Z0-9_]*)} |
     (?P<invalid>)
     )@"""
     flags = re.ASCII
